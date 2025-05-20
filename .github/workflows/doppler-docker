@@ -1,0 +1,52 @@
+name: Doppler Docker CI/CD
+
+on:
+  workflow_call:
+    inputs:
+      config:
+        required: false
+        type: string
+        default: "prod"
+    secrets:
+      doppler-token:
+        required: true
+      sentry-auth-token:
+        required: false
+      sentry-org:
+        required: false
+      sentry-project:
+        required: false
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Doppler CLI
+        run: curl -Ls https://cli.doppler.com/install.sh | sh
+
+      - name: Setup Doppler
+        run: doppler setup --token ${{ secrets.doppler-token }} --project ${{ github.event.repository.name }} --config ${{ inputs.config }} --no-interactive
+
+      - name: Export Doppler secrets to ENV
+        run: doppler secrets download --no-file --format env | tee -a $GITHUB_ENV
+
+      - name: Create Sentry Release (if configured)
+        if: ${{ secrets.sentry-auth-token != '' }}
+        run: |
+          export SENTRY_RELEASE=$(git rev-parse --short HEAD)
+          sentry-cli releases new "$SENTRY_RELEASE"
+          sentry-cli releases set-commits "$SENTRY_RELEASE" --auto
+          sentry-cli releases finalize "$SENTRY_RELEASE"
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.sentry-auth-token }}
+          SENTRY_ORG: ${{ secrets.sentry-org }}
+          SENTRY_PROJECT: ${{ secrets.sentry-project }}
+
+      - name: Build Docker image
+        run: |
+          export SENTRY_RELEASE=$(git rev-parse --short HEAD)
+          docker build \
+            --build-arg SENTRY_RELEASE=$SENTRY_RELEASE \
+            -t ghcr.io/${{ github.repository }}:${{ github.sha }} .
